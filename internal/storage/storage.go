@@ -4,9 +4,11 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -66,22 +68,70 @@ func (m *Manager) RemoveTempDir(id string) error {
 	return os.RemoveAll(dir)
 }
 
-// Archive creates a tar.gz from the active temp directory and moves it
-// to the sessions/ directory. Also writes a .tag sidecar file.
+// zstdAvailable checks if the zstd binary is usable.
+var zstdAvailable = checkZstd()
+
+func checkZstd() bool {
+	return exec.Command("zstd", "--version").Run() == nil
+}
+
+// zstdCompress compresses a file with zstd -3 -T0.
+func zstdCompress(input, output string) error {
+	cmd := exec.Command("zstd", "-3", "-T0", "-q", "-f", "-o", output, input)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// zstdDecompress decompresses a zst file to the given output.
+func zstdDecompress(input, output string) error {
+	cmd := exec.Command("zstd", "-d", "-q", "-f", "-o", output, input)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// getArchiveExt returns the archive file extension and compressor name.
+func getArchiveExt() (ext string) {
+	if zstdAvailable {
+		return ".tar.zst"
+	}
+	return ".tar.gz"
+}
+
+// readTagFromTemp reads the tag from session.json in the temp directory.
+func readTagFromTemp(srcDir string) string {
+	data, err := os.ReadFile(filepath.Join(srcDir, "session.json"))
+	if err != nil {
+		return ""
+	}
+	var m struct {
+		Tag string `json:"tag"`
+	}
+	if err := json.Unmarshal(data, &m); err != nil {
+		return ""
+	}
+	return m.Tag
+}
+
+// Archive creates a tar.zst (or tar.gz fallback) from the active temp directory
+// and moves it to the sessions/ directory. Also writes a .tag sidecar file.
 func (m *Manager) Archive(sessionID string) (*Archive, error) {
 	srcDir := filepath.Join(m.tempDir, sessionID)
-	archiveName := sessionID + ".tar.gz"
-	archivePath := filepath.Join(m.sessionsDir, archiveName)
+	ext := getArchiveExt()
+	archivePath := filepath.Join(m.sessionsDir, sessionID+ext)
 
-	f, err := os.Create(archivePath)
+	// Read tag from temp dir session.json before archiving.
+	tag := readTagFromTemp(srcDir)
+
+	// 1. Create uncompressed tar.
+	tmpTar := archivePath + ".tar"
+	tf, err := os.Create(tmpTar)
 	if err != nil {
-		return nil, fmt.Errorf("create archive: %w", err)
+		return nil, fmt.Errorf("create tar: %w", err)
 	}
-	defer f.Close()
 
-	gw := gzip.NewWriter(f)
-	tw := tar.NewWriter(gw)
-
+	tw := tar.NewWriter(tf)
 	err = filepath.Walk(srcDir, func(path string, fi os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -114,30 +164,38 @@ func (m *Manager) Archive(sessionID string) (*Archive, error) {
 		_, err = io.Copy(tw, src)
 		return err
 	})
+	closeErr := tw.Close()
+	tf.Close()
+
 	if err != nil {
-		f.Close()
-		os.Remove(archivePath)
+		os.Remove(tmpTar)
 		return nil, fmt.Errorf("archive walk: %w", err)
 	}
-
-	if err := tw.Close(); err != nil {
-		f.Close()
-		os.Remove(archivePath)
-		return nil, fmt.Errorf("tar close: %w", err)
+	if closeErr != nil {
+		os.Remove(tmpTar)
+		return nil, fmt.Errorf("tar close: %w", closeErr)
 	}
-	if err := gw.Close(); err != nil {
-		f.Close()
-		os.Remove(archivePath)
-		return nil, fmt.Errorf("gzip close: %w", err)
-	}
-	f.Close()
 
-	// Remove the temp directory after successful archive.
+	// 2. Compress.
+	if zstdAvailable {
+		if err := zstdCompress(tmpTar, archivePath); err != nil {
+			os.Remove(tmpTar)
+			return nil, fmt.Errorf("zstd compress: %w", err)
+		}
+	} else {
+		if err := gzipCompress(tmpTar, archivePath); err != nil {
+			os.Remove(tmpTar)
+			return nil, fmt.Errorf("gzip compress: %w", err)
+		}
+	}
+	os.Remove(tmpTar)
+
+	// 3. Remove the temp directory.
 	os.RemoveAll(srcDir)
 
-	// Write .tag sidecar for fast tag lookup in List().
-	if meta, err := readSessionMeta(archivePath); err == nil && meta.Tag != "" {
-		os.WriteFile(archivePath+".tag", []byte(meta.Tag), 0644)
+	// 4. Write .tag sidecar for fast tag lookup in List().
+	if tag != "" {
+		os.WriteFile(archivePath+".tag", []byte(tag), 0644)
 	}
 
 	st, err := os.Stat(archivePath)
@@ -145,62 +203,59 @@ func (m *Manager) Archive(sessionID string) (*Archive, error) {
 		return nil, err
 	}
 
-	info := &Archive{
+	return &Archive{
 		ID:        sessionID,
+		Tag:       tag,
 		CreatedAt: st.ModTime(),
 		Path:      archivePath,
 		SizeBytes: st.Size(),
-	}
-	if meta, err := readSessionMeta(archivePath); err == nil && meta.Tag != "" {
-		info.Tag = meta.Tag
-	}
-
-	return info, nil
+	}, nil
 }
 
-type sessionMeta struct {
-	Tag string `json:"tag"`
+// gzipCompress is the fallback compressor when zstd is unavailable.
+func gzipCompress(input, output string) error {
+	in, err := os.Open(input)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(output)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	gw := gzip.NewWriter(out)
+	_, err = io.Copy(gw, in)
+	if closeErr := gw.Close(); closeErr != nil && err == nil {
+		err = closeErr
+	}
+	return err
 }
 
-func readSessionMeta(archivePath string) (sessionMeta, error) {
-	f, err := os.Open(archivePath)
-	if err != nil {
-		return sessionMeta{}, err
-	}
-	defer f.Close()
-
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return sessionMeta{}, err
-	}
-	defer gz.Close()
-
-	tr := tar.NewReader(gz)
-	for {
-		hdr, err := tr.Next()
-		if err != nil {
-			break
-		}
-		if hdr.Name == "session.json" || strings.HasSuffix(hdr.Name, "/session.json") {
-			data, err := io.ReadAll(tr)
-			if err != nil {
-				return sessionMeta{}, err
-			}
-			var m sessionMeta
-			content := string(data)
-			if idx := strings.Index(content, `"tag"`); idx >= 0 {
-				rest := content[idx+5:]
-				if ci := strings.Index(rest, `"`); ci >= 0 {
-					rest = rest[ci+1:]
-					if cj := strings.Index(rest, `"`); cj >= 0 {
-						m.Tag = rest[:cj]
-					}
-				}
-			}
-			return m, nil
+// findArchive returns the archive path for a session ID,
+// trying .tar.zst first, then .tar.gz.
+func (m *Manager) findArchive(id string) (string, error) {
+	for _, ext := range []string{".tar.zst", ".tar.gz"} {
+		p := filepath.Join(m.sessionsDir, id+ext)
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
 		}
 	}
-	return sessionMeta{}, nil
+	return "", fmt.Errorf("archive not found: %s", id)
+}
+
+// isArchiveExt returns true if the filename has a valid archive extension.
+func isArchiveExt(name string) bool {
+	return strings.HasSuffix(name, ".tar.zst") || strings.HasSuffix(name, ".tar.gz")
+}
+
+// archiveID extracts the session ID from an archive filename.
+func archiveID(name string) string {
+	name = strings.TrimSuffix(name, ".tar.zst")
+	name = strings.TrimSuffix(name, ".tar.gz")
+	return name
 }
 
 // List returns all completed session archives, newest first.
@@ -215,17 +270,16 @@ func (m *Manager) List(limit int) ([]Archive, error) {
 
 	var archives []Archive
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".tar.gz") {
+		if e.IsDir() || !isArchiveExt(e.Name()) {
 			continue
 		}
 		info, err := e.Info()
 		if err != nil {
 			continue
 		}
-		id := strings.TrimSuffix(e.Name(), ".tar.gz")
+		id := archiveID(e.Name())
 		p := filepath.Join(m.sessionsDir, e.Name())
 
-		// Read .tag sidecar if present.
 		tag := ""
 		if tagData, err := os.ReadFile(p + ".tag"); err == nil {
 			tag = string(bytes.TrimSpace(tagData))
@@ -276,13 +330,21 @@ func (m *Manager) Cleanup(keep int, dryRun bool) ([]string, error) {
 
 // GetArchive returns info for a specific archive by ID.
 func (m *Manager) GetArchive(id string) (*Archive, error) {
-	p := filepath.Join(m.sessionsDir, id+".tar.gz")
+	p, err := m.findArchive(id)
+	if err != nil {
+		return nil, err
+	}
 	st, err := os.Stat(p)
 	if err != nil {
 		return nil, err
 	}
+	tag := ""
+	if tagData, err := os.ReadFile(p + ".tag"); err == nil {
+		tag = string(bytes.TrimSpace(tagData))
+	}
 	return &Archive{
 		ID:        id,
+		Tag:       tag,
 		CreatedAt: st.ModTime(),
 		Path:      p,
 		SizeBytes: st.Size(),
@@ -291,26 +353,43 @@ func (m *Manager) GetArchive(id string) (*Archive, error) {
 
 // ExtractTemp extracts an archive to a temp directory for replay.
 func (m *Manager) ExtractTemp(id string) (string, error) {
-	archivePath := filepath.Join(m.sessionsDir, id+".tar.gz")
+	archivePath, err := m.findArchive(id)
+	if err != nil {
+		return "", err
+	}
+
 	destDir := filepath.Join(m.tempDir, id+".replay")
 	os.RemoveAll(destDir)
 	if err := os.MkdirAll(destDir, 0700); err != nil {
 		return "", err
 	}
 
-	f, err := os.Open(archivePath)
+	// Decompress to temp tar.
+	tmpTar := filepath.Join(m.tempDir, id+".tmp.tar")
+	var tarPath string
+
+	if strings.HasSuffix(archivePath, ".tar.zst") {
+		if err := zstdDecompress(archivePath, tmpTar); err != nil {
+			return "", fmt.Errorf("zstd decompress: %w", err)
+		}
+		tarPath = tmpTar
+	} else {
+		// gzip: decompress inline.
+		tarPath = tmpTar
+		if err := gunzipFile(archivePath, tmpTar); err != nil {
+			return "", fmt.Errorf("gzip decompress: %w", err)
+		}
+	}
+	defer os.Remove(tmpTar)
+
+	// Untar.
+	f, err := os.Open(tarPath)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
 
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return "", err
-	}
-	defer gz.Close()
-
-	tr := tar.NewReader(gz)
+	tr := tar.NewReader(f)
 	for {
 		hdr, err := tr.Next()
 		if err != nil {
@@ -330,4 +409,28 @@ func (m *Manager) ExtractTemp(id string) (string, error) {
 		out.Close()
 	}
 	return destDir, nil
+}
+
+// gunzipFile decompresses a gzip file to the output path.
+func gunzipFile(input, output string) error {
+	in, err := os.Open(input)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(output)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	gz, err := gzip.NewReader(in)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+
+	_, err = io.Copy(out, gz)
+	return err
 }

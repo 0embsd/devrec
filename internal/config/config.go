@@ -11,25 +11,23 @@ import (
 	"github.com/spf13/pflag"
 )
 
+// CollectorSettings holds per-collector configuration.
+type CollectorSettings struct {
+	SystemdUnits   []string `json:"systemd_units,omitempty"`
+	CertPaths      []string `json:"cert_paths,omitempty"`
+	FirewallTables []string `json:"firewall_tables,omitempty"`
+	PortFlags      string   `json:"port_flags,omitempty"`
+}
+
 // Config holds all devrec configuration.
 type Config struct {
-	// BaseDir is the root directory for sessions and archives.
-	BaseDir string
-
-	// Shell is the shell used for terminal recording. Default: $SHELL or "bash".
-	Shell string
-
-	// DefaultCollectors is the list of collectors enabled by default.
-	DefaultCollectors []string
-
-	// KeepArchives is the number of recent archives to keep during cleanup.
-	KeepArchives int
-
-	// CollectorTimeout is the per-collector execution timeout.
-	CollectorTimeout time.Duration
-
-	// PIDDir is where the session PID file is stored.
-	PIDDir string
+	BaseDir            string            `json:"dir"`
+	Shell              string            `json:"shell,omitempty"`
+	DefaultCollectors  []string          `json:"default_collectors"`
+	KeepArchives       int               `json:"keep_archives"`
+	CollectorTimeout   time.Duration     `json:"collector_timeout"`
+	CollectorSettings  CollectorSettings `json:"collector_settings,omitempty"`
+	PIDDir             string            `json:"pid_dir,omitempty"`
 }
 
 // Defaults returns the zero-config default Config.
@@ -40,7 +38,12 @@ func Defaults() *Config {
 		DefaultCollectors:  []string{"systemd", "ports", "network", "resources", "firewall", "kernel"},
 		KeepArchives:       20,
 		CollectorTimeout:   15 * time.Second,
-		PIDDir:             "/var/run/devrec",
+		CollectorSettings: CollectorSettings{
+			SystemdUnits:   []string{"xray", "nginx", "ssh", "ufw"},
+			CertPaths:      defaultCertPaths(),
+			FirewallTables: []string{"filter", "nat"},
+		},
+		PIDDir: "/var/run/devrec",
 	}
 }
 
@@ -78,6 +81,11 @@ func Load(flags *pflag.FlagSet) (*Config, error) {
 			c.KeepArchives = n
 		}
 	}
+	if v := os.Getenv("DEVREC_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.CollectorTimeout = d
+		}
+	}
 
 	// 3. CLI flags (highest priority).
 	if v, _ := flags.GetString("dir"); v != "" {
@@ -94,15 +102,21 @@ func resolveShell() string {
 	return "bash"
 }
 
+func defaultCertPaths() []string {
+	return []string{
+		"/etc/ssl/certs",
+		"/etc/nginx/ssl",
+		"/etc/xray",
+	}
+}
+
 func findConfigFile() string {
-	// ~/.devrec.yaml
 	if u, err := user.Current(); err == nil {
 		p := filepath.Join(u.HomeDir, ".devrec.yaml")
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}
 	}
-	// /etc/devrec.yaml
 	if _, err := os.Stat("/etc/devrec.yaml"); err == nil {
 		return "/etc/devrec.yaml"
 	}
@@ -154,6 +168,10 @@ func loadYAML(path string, c *Config) error {
 			if err == nil {
 				c.CollectorTimeout = d
 			}
+		case "systemd_units":
+			c.CollectorSettings.SystemdUnits = parseList(val)
+		case "cert_paths":
+			c.CollectorSettings.CertPaths = parseList(val)
 		}
 	}
 	return nil

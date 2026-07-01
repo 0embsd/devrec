@@ -52,3 +52,14 @@ echo "  devrec watch --interval 30s"
 echo "  devrec list"
 echo "  devrec status"
 "$BIN" --help
+
+# Dependency check
+check_cmd() {
+    if ! command -v $1 >/dev/null 2>&1; then
+        echo "WARNING: $1 not found. Install: apt install $2"
+    fi
+}
+check_cmd zstd zstd
+check_cmd script util-linux
+check_cmd scriptreplay util-linux
+check_cmd ss iproute2
