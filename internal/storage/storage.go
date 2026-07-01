@@ -2,6 +2,7 @@ package storage
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"fmt"
 	"io"
@@ -66,7 +67,7 @@ func (m *Manager) RemoveTempDir(id string) error {
 }
 
 // Archive creates a tar.gz from the active temp directory and moves it
-// to the sessions/ directory.
+// to the sessions/ directory. Also writes a .tag sidecar file.
 func (m *Manager) Archive(sessionID string) (*Archive, error) {
 	srcDir := filepath.Join(m.tempDir, sessionID)
 	archiveName := sessionID + ".tar.gz"
@@ -134,6 +135,11 @@ func (m *Manager) Archive(sessionID string) (*Archive, error) {
 	// Remove the temp directory after successful archive.
 	os.RemoveAll(srcDir)
 
+	// Write .tag sidecar for fast tag lookup in List().
+	if meta, err := readSessionMeta(archivePath); err == nil && meta.Tag != "" {
+		os.WriteFile(archivePath+".tag", []byte(meta.Tag), 0644)
+	}
+
 	st, err := os.Stat(archivePath)
 	if err != nil {
 		return nil, err
@@ -145,8 +151,6 @@ func (m *Manager) Archive(sessionID string) (*Archive, error) {
 		Path:      archivePath,
 		SizeBytes: st.Size(),
 	}
-
-	// Try to read tag from the archived session.json.
 	if meta, err := readSessionMeta(archivePath); err == nil && meta.Tag != "" {
 		info.Tag = meta.Tag
 	}
@@ -159,7 +163,6 @@ type sessionMeta struct {
 }
 
 func readSessionMeta(archivePath string) (sessionMeta, error) {
-	// Read session.json from inside the tar.gz.
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return sessionMeta{}, err
@@ -183,11 +186,9 @@ func readSessionMeta(archivePath string) (sessionMeta, error) {
 			if err != nil {
 				return sessionMeta{}, err
 			}
-			// Manual parse: find "tag"
 			var m sessionMeta
 			content := string(data)
 			if idx := strings.Index(content, `"tag"`); idx >= 0 {
-				// Find the value after "tag":
 				rest := content[idx+5:]
 				if ci := strings.Index(rest, `"`); ci >= 0 {
 					rest = rest[ci+1:]
@@ -223,8 +224,16 @@ func (m *Manager) List(limit int) ([]Archive, error) {
 		}
 		id := strings.TrimSuffix(e.Name(), ".tar.gz")
 		p := filepath.Join(m.sessionsDir, e.Name())
-		a := Archive{
+
+		// Read .tag sidecar if present.
+		tag := ""
+		if tagData, err := os.ReadFile(p + ".tag"); err == nil {
+			tag = string(bytes.TrimSpace(tagData))
+		}
+
+		archives = append(archives, Archive{
 			ID:        id,
+			Tag:       tag,
 			CreatedAt: info.ModTime(),
 			Path:      p,
 			SizeBytes: info.Size(),
@@ -259,6 +268,7 @@ func (m *Manager) Cleanup(keep int, dryRun bool) ([]string, error) {
 		removed = append(removed, a.Path)
 		if !dryRun {
 			os.Remove(a.Path)
+			os.Remove(a.Path + ".tag")
 		}
 	}
 	return removed, nil
@@ -320,12 +330,4 @@ func (m *Manager) ExtractTemp(id string) (string, error) {
 		out.Close()
 	}
 	return destDir, nil
-}
-
-// Fix: List now reads tags.
-func (m *Manager) fixTag(a *Archive) {
-	// Try to load tag from tar.gz.
-	if meta, err := readSessionMeta(a.Path); err == nil && meta.Tag != "" {
-		a.Tag = meta.Tag
-	}
 }
