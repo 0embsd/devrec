@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/0embsd/devrec/internal/storage"
@@ -36,10 +37,26 @@ func runList(cmd *cobra.Command, args []string) error {
 	}
 
 	if asJSON {
-		for _, a := range archives {
-			fmt.Printf(`{"id":"%s","tag":"%s","created_at":"%s","size_bytes":%d}\n`,
-				a.ID, a.Tag, a.CreatedAt.Format("2006-01-02T15:04:05"), a.SizeBytes)
+		type jsonEntry struct {
+			ID        string `json:"id"`
+			Tag       string `json:"tag"`
+			CreatedAt string `json:"created_at"`
+			SizeBytes int64  `json:"size_bytes"`
 		}
+		entries := make([]jsonEntry, len(archives))
+		for i, a := range archives {
+			entries[i] = jsonEntry{
+				ID:        a.ID,
+				Tag:       a.Tag,
+				CreatedAt: a.CreatedAt.Format("2006-01-02T15:04:05"),
+				SizeBytes: a.SizeBytes,
+			}
+		}
+		data, err := json.MarshalIndent(entries, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
 		return nil
 	}
 

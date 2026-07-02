@@ -162,7 +162,9 @@ func loadYAML(path string, c *Config) error {
 		case "default_collectors":
 			c.DefaultCollectors = parseList(val)
 		case "keep_archives":
-			fmt.Sscanf(val, "%d", &c.KeepArchives)
+			if _, err := fmt.Sscanf(val, "%d", &c.KeepArchives); err != nil {
+			fmt.Fprintf(os.Stderr, "devrec: invalid keep_archives value %q\n", val)
+		}
 		case "collector_timeout":
 			d, err := time.ParseDuration(val)
 			if err == nil {

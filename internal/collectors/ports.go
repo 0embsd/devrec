@@ -55,7 +55,7 @@ func parseSS(output string, hasProc bool) []PortEntry {
 		}
 
 		// Parse LocalAddress:Port (field 4).
-		addr := fields[4]
+		addr := fields[3]
 		if idx := strings.LastIndex(addr, ":"); idx >= 0 {
 			entry.Address = addr[:idx]
 			portStr := addr[idx+1:]
@@ -66,9 +66,9 @@ func parseSS(output string, hasProc bool) []PortEntry {
 			}
 		}
 
-		if hasProc && len(fields) >= 7 {
+		if hasProc && len(fields) >= 6 {
 			// Process is in the last field(s), may contain spaces.
-			entry.Process = strings.Join(fields[6:], " ")
+			entry.Process = strings.Join(fields[5:], " ")
 			// Extract just the process name from "users:(("nginx",pid=..." format.
 			if idx := strings.Index(entry.Process, `"`); idx >= 0 {
 				rest := entry.Process[idx+1:]

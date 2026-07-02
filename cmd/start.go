@@ -66,12 +66,6 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	reg := collectors.DefaultRegistry()
-	todo, err := collectors.FilterRegistry(reg, collectorNames)
-	if err != nil {
-		return err
-	}
-	_ = todo
-
 	engine := snapshot.NewEngine(reg, c.CollectorTimeout)
 
 	fmt.Println("=== devrec start ===")
@@ -97,7 +91,11 @@ func runStart(cmd *cobra.Command, args []string) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
 		sig := <-sigCh
-		fmt.Fprintf(os.Stderr, "\n[devrec] received %v, shutting down...\n", sig)
+		if sig != nil {
+			fmt.Fprintf(os.Stderr, "\n[devrec] received %v, shutting down...\n", sig)
+		} else {
+			fmt.Fprintf(os.Stderr, "\n[devrec] shutting down...\n")
+		}
 		cancel()
 	}()
 
@@ -133,6 +131,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	sm.SetPID(scriptPID)
+	sm.UpdateState(session.StateCompleted)
 	session.RemovePIDFile(c.PIDFile())
 
 	fmt.Print("Packaging... ")

@@ -49,6 +49,8 @@ func (e *Engine) Run(ctx context.Context, sessionID string, label string, names 
 	for _, name := range names {
 		if c, ok := e.registry[name]; ok {
 			todo = append(todo, c)
+		} else {
+			fmt.Fprintf(os.Stderr, "devrec: unknown collector %q — skipping\n", name)
 		}
 	}
 	for _, c := range customs {

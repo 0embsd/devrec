@@ -100,7 +100,7 @@ func runWatch(cmd *cobra.Command, args []string) error {
 			label := fmt.Sprintf("snap-%03d", seq)
 			snap := engine.Run(ctx, meta.ID, label, collectorNames, nil)
 			snapPath := filepath.Join(sm.ActiveDir(), fmt.Sprintf("snap-%03d.json", seq))
-			snapshot.WriteJSON(snap, snapPath)
+			_ = snapshot.WriteJSON(snap, snapPath)
 			fmt.Printf("  [%d] %s\n", seq, snapPath)
 		}
 	}

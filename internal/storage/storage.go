@@ -195,7 +195,7 @@ func (m *Manager) Archive(sessionID string) (*Archive, error) {
 
 	// 4. Write .tag sidecar for fast tag lookup in List().
 	if tag != "" {
-		os.WriteFile(archivePath+".tag", []byte(tag), 0644)
+		_ = os.WriteFile(archivePath+".tag", []byte(tag), 0644)
 	}
 
 	st, err := os.Stat(archivePath)
@@ -405,7 +405,10 @@ func (m *Manager) ExtractTemp(id string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		io.Copy(out, tr)
+		if _, err := io.Copy(out, tr); err != nil {
+			out.Close()
+			return "", fmt.Errorf("extract %s: %w", target, err)
+		}
 		out.Close()
 	}
 	return destDir, nil
