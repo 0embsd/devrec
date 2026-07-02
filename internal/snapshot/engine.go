@@ -126,6 +126,7 @@ func WriteJSON(snap *Snapshot, path string) error {
 }
 
 // ComputeDiff compares pre and post snapshots, producing a structured diff.
+// When collector data is a map, it emits per-field entries for precise change tracking.
 func ComputeDiff(pre, post *Snapshot) interface{} {
 	type diffEntry struct {
 		Collector string      `json:"collector"`
@@ -144,7 +145,6 @@ func ComputeDiff(pre, post *Snapshot) interface{} {
 		postMap[r.Collector] = r
 	}
 
-	// Check all post collectors against pre.
 	for name, postR := range postMap {
 		preR, ok := preMap[name]
 		if !ok {
@@ -156,10 +156,54 @@ func ComputeDiff(pre, post *Snapshot) interface{} {
 			continue
 		}
 
-		// Compare JSON representation.
 		preJSON, _ := json.Marshal(preR.Data)
 		postJSON, _ := json.Marshal(postR.Data)
-		if string(preJSON) != string(postJSON) {
+		if string(preJSON) == string(postJSON) {
+			delete(preMap, name)
+			continue
+		}
+
+		// Normalize via JSON round-trip for field-level comparison.
+		var preNorm, postNorm interface{}
+		json.Unmarshal(preJSON, &preNorm)
+		json.Unmarshal(postJSON, &postNorm)
+
+		preM, preIsMap := preNorm.(map[string]interface{})
+		postM, postIsMap := postNorm.(map[string]interface{})
+		if preIsMap && postIsMap {
+			seen := make(map[string]bool)
+			for k := range preM {
+				seen[k] = true
+			}
+			for k := range postM {
+				seen[k] = true
+			}
+			for k := range seen {
+				pv, pok := preM[k]
+				nv, nok := postM[k]
+				if !pok {
+					entries = append(entries, diffEntry{
+						Collector: name, Field: k,
+						Post: nv,
+					})
+				} else if !nok {
+					entries = append(entries, diffEntry{
+						Collector: name, Field: k,
+						Pre: pv,
+					})
+				} else {
+					pj, _ := json.Marshal(pv)
+					nj, _ := json.Marshal(nv)
+					if string(pj) != string(nj) {
+						entries = append(entries, diffEntry{
+							Collector: name, Field: k,
+							Pre:  pv,
+							Post: nv,
+						})
+					}
+				}
+			}
+		} else {
 			entries = append(entries, diffEntry{
 				Collector: name,
 				Pre:       preR.Data,
@@ -169,7 +213,6 @@ func ComputeDiff(pre, post *Snapshot) interface{} {
 		delete(preMap, name)
 	}
 
-	// Remaining pre collectors not in post.
 	for name, preR := range preMap {
 		entries = append(entries, diffEntry{
 			Collector: name,
@@ -180,7 +223,6 @@ func ComputeDiff(pre, post *Snapshot) interface{} {
 
 	return entries
 }
-
 
 // WriteJSONRaw writes arbitrary data as JSON to a file atomically.
 func WriteJSONRaw(data interface{}, path string) error {

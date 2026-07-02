@@ -33,6 +33,10 @@ func (c *CertCollector) Collect(ctx context.Context) (interface{}, error) {
 		paths = defaultCertPaths()
 	}
 
+	if len(paths) == 0 {
+		return make(map[string]*CertInfo), nil
+	}
+
 	results := make(map[string]*CertInfo, len(paths))
 	for _, path := range paths {
 		info := &CertInfo{Path: path}
@@ -56,21 +60,29 @@ func (c *CertCollector) Collect(ctx context.Context) (interface{}, error) {
 	return results, nil
 }
 
+// defaultCertPaths returns real certificate file paths on the system.
+// Only returns actual .pem files, never directories.
 func defaultCertPaths() []string {
 	var paths []string
-	candidates := []string{
+
+	for _, p := range []string{
 		"/etc/myx/cert/fullchain.pem",
-		"/etc/letsencrypt/live",
-		"/etc/ssl/certs",
-	}
-	for _, p := range candidates {
+		"/usr/local/etc/xray/fullchain.pem",
+	} {
 		if _, err := os.Stat(p); err == nil {
 			paths = append(paths, p)
 		}
 	}
-	if len(paths) == 0 {
-		paths = append(paths, "/etc/ssl/certs")
+
+	if entries, err := os.ReadDir("/etc/letsencrypt/live"); err == nil {
+		for _, e := range entries {
+			certPath := "/etc/letsencrypt/live/" + e.Name() + "/fullchain.pem"
+			if _, err := os.Stat(certPath); err == nil {
+				paths = append(paths, certPath)
+			}
+		}
 	}
+
 	return paths
 }
 
@@ -86,7 +98,6 @@ func parseCertOutput(output string, info *CertInfo) {
 			info.NotBefore = strings.TrimPrefix(line, "notBefore=")
 		} else if strings.HasPrefix(line, "notAfter=") {
 			info.NotAfter = strings.TrimPrefix(line, "notAfter=")
-			// Parse date and compute days remaining.
 			if t, err := time.Parse("Jan  2 15:04:05 2006 MST", info.NotAfter); err == nil {
 				info.DaysRemaining = int(time.Until(t).Hours() / 24)
 			} else if t, err := time.Parse("Jan 2 15:04:05 2006 MST", info.NotAfter); err == nil {
@@ -95,4 +106,3 @@ func parseCertOutput(output string, info *CertInfo) {
 		}
 	}
 }
-
