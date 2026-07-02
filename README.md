@@ -17,16 +17,22 @@ install.sh 自动检测环境：无 Go → 安装 Go 1.24 → 编译；有本地
 ### 私有安装（开发者）
 
 ```bash
-git clone git@github.com:0embsd/devrec.git
-cd devrec
-make build && sudo make install
+# 1. 准备 SSH key（首次）
+scp ./github_myx admin@vps:~/.ssh/github_myx_local
+
+# 2. 克隆仓库
+GIT_SSH_COMMAND='ssh -i ~/.ssh/github_myx_local -o StrictHostKeyChecking=accept-new' \
+  git clone git@github.com:0embsd/devrec.git /opt/devrec
+
+# 3. 安装（install.sh 自动检测 Go + 依赖）
+cd /opt/devrec && sudo bash install.sh
 ```
 
 ### 系统依赖
 
 `zstd` `curl` `tar` `script` `scriptreplay` `ss` `openssl`
 
-install.sh 会自动安装缺失的系统包；`make install` 需自行确保依赖就绪。
+install.sh 会自动安装缺失的系统包。
 
 ---
 
