@@ -100,12 +100,14 @@ func runWatch(cmd *cobra.Command, args []string) error {
 			label := fmt.Sprintf("snap-%03d", seq)
 			snap := engine.Run(ctx, meta.ID, label, collectorNames, nil)
 			snapPath := filepath.Join(sm.ActiveDir(), fmt.Sprintf("snap-%03d.json", seq))
-			_ = snapshot.WriteJSON(snap, snapPath)
+			snapshot.WriteJSON(snap, snapPath)
 			fmt.Printf("  [%d] %s\n", seq, snapPath)
 		}
 	}
 
 done:
+	sm.UpdateState(session.StateCompleted)
+	session.RemovePIDFile(c.PIDFile())
 	archive, err := st.Archive(meta.ID)
 	if err != nil {
 		return fmt.Errorf("archive: %w", err)

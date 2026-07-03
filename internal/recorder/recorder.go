@@ -39,13 +39,26 @@ func (r *Recorder) Start(ctx context.Context) (scriptPID int, err error) {
 		return 0, fmt.Errorf("script: utility not found; install util-linux (apt install util-linux)")
 	}
 
-	// script --quiet --timing=<timingFile> --command=<shell> <logFile>
-	cmd := exec.CommandContext(ctx, scriptPath,
-		"--quiet",
-		"--timing="+r.timingFile,
-		"--command="+r.shell,
-		r.logFile,
-	)
+	// Non-TTY stdin: script --command does not forward piped stdin through
+	// the PTY, resulting in 0-byte terminal.log. Without --command, script
+	// reads from its own stdin and writes through the PTY correctly.
+	var args []string
+	if isStdinTerminal() {
+		args = []string{
+			"--quiet",
+			"--timing=" + r.timingFile,
+			"--command=" + r.shell,
+			r.logFile,
+		}
+	} else {
+		args = []string{
+			"--quiet",
+			"--timing=" + r.timingFile,
+			r.logFile,
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, scriptPath, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -81,6 +94,17 @@ func (r *Recorder) Start(ctx context.Context) (scriptPID int, err error) {
 	case err := <-done:
 		return scriptPID, err
 	}
+}
+
+// isStdinTerminal checks whether stdin is a TTY device.
+// When stdin is a pipe (e.g. echo 'cmd' | devrec start), script --command
+// does not forward piped data through the PTY, resulting in 0-byte terminal.log.
+func isStdinTerminal() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
 // resolveShell returns the shell to use for recording.
